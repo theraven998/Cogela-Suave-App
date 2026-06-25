@@ -1,0 +1,30 @@
+<resources>
+    <string name="app_name">CógelaSuave</string>
+    <string name="accessibility_service_label">CógelaSuave – pausa consciente</string>
+    <string name="accessibility_service_description">Detecta cuándo abres una app vigilada para mostrarte una pausa de respiración antes de entrar. No recopila ni envía ningún dato; todo se queda en tu dispositivo.</string>
+
+    <!-- Overlay -->
+    <string name="breathe_in">Inhala…</string>
+    <string name="breathe_out">Exhala…</string>
+    <string name="overlay_question">¿Realmente quieres abrir esto, o es solo inercia?</string>
+    <string name="overlay_open">Abrir</string>
+    <string name="overlay_dismiss">Mejor no</string>
+    <string name="overlay_attempts_today">Intentos hoy: %1$d</string>
+    <string name="overlay_wait_seconds">%1$d s</string>
+
+    <!-- Stats -->
+    <string name="stats_today">Hoy</string>
+    <string name="stats_label_attempts">Intentos</string>
+    <string name="stats_label_dismissed">«Mejor no»</string>
+    <string name="stats_label_saved">Ahorrado</string>
+    <string name="stats_minutes_short">%1$dm</string>
+    <string name="stats_per_app">Por app</string>
+    <string name="stats_empty_today">Aún no hay intentos hoy.\nEmpieza con calma 🌱</string>
+    <string name="stats_loading">Cargando tus estadísticas…</string>
+    <string name="stats_row_summary">%1$d intentos · %2$d frenados</string>
+    <string name="stats_week_title">Últimos 7 días</string>
+    <string name="stats_week_empty">Sin actividad esta semana. Respira tranquilo 🌿</string>
+    <string name="stats_week_total_attempts">Intentos (7d)</string>
+    <string name="stats_week_total_dismissed">Frenados (7d)</string>
+    <string name="stats_week_total_saved">Ahorrado (7d)</string>
+</resources>

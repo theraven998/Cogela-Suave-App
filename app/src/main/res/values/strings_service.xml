@@ -1,0 +1,19 @@
+<resources>
+    <!-- Quick Settings tile (watch snooze) -->
+    <string name="tile_snooze_label">Pausa CógelaSuave</string>
+    <string name="tile_snooze_inactive">Toca para pausar la vigilancia</string>
+    <string name="tile_snooze_active">Pausada · ~%1$d min</string>
+    <string name="tile_snooze_strict">Modo estricto activo</string>
+
+    <!-- Snooze / strict mode settings -->
+    <string name="snooze_card_title">Pausa de vigilancia</string>
+    <string name="snooze_card_description">Desactiva temporalmente la pausa de respiración. Las apps vigiladas se abrirán sin interrupción hasta que termine.</string>
+    <string name="snooze_active_until">Vigilancia en pausa · quedan ~%1$d min</string>
+    <string name="snooze_inactive">La vigilancia está activa.</string>
+    <string name="snooze_cancel">Reanudar vigilancia ahora</string>
+    <string name="snooze_option_minutes">%1$d min</string>
+
+    <string name="strict_card_title">Modo estricto</string>
+    <string name="strict_card_description">Si lo activas, no podrás usar la pausa de vigilancia (ni desde la app ni desde los ajustes rápidos). Úsalo cuando quieras que no haya forma fácil de saltarte el sistema.</string>
+    <string name="strict_blocks_snooze">El modo estricto está activo: la pausa de vigilancia está deshabilitada.</string>
+</resources>
