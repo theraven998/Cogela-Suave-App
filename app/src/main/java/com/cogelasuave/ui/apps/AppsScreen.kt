@@ -63,6 +63,7 @@ fun AppsScreen(viewModel: AppsViewModel = hiltViewModel()) {
                 items(state.apps, key = { it.packageName }) { app ->
                     AppRow(
                         app = app,
+                        strictMode = state.strictMode,
                         onWatchedChange = { viewModel.onWatchedChange(app, it) },
                         onEditWait = { editingApp = app },
                     )
@@ -87,9 +88,12 @@ fun AppsScreen(viewModel: AppsViewModel = hiltViewModel()) {
 @Composable
 private fun AppRow(
     app: AppInfo,
+    strictMode: Boolean,
     onWatchedChange: (Boolean) -> Unit,
     onEditWait: () -> Unit,
 ) {
+    // While strict mode is on, a watched app is locked: can't un-watch or edit wait.
+    val locked = strictMode && app.isWatched
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -100,16 +104,25 @@ private fun AppRow(
             Text(text = app.label, style = MaterialTheme.typography.bodyLarge)
             if (app.isWatched) {
                 val waitLabel = app.customWaitSeconds?.let { "$it s" } ?: "tiempo global"
+                val suffix = if (locked) "· bloqueada (modo estricto)" else "· toca para cambiar"
                 Text(
-                    text = "Espera: $waitLabel · toca para cambiar",
+                    text = "Espera: $waitLabel $suffix",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.clickable(onClick = onEditWait),
+                    color = if (locked) {
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                    modifier = if (locked) Modifier else Modifier.clickable(onClick = onEditWait),
                 )
             }
         }
         Spacer(Modifier.width(12.dp))
-        Switch(checked = app.isWatched, onCheckedChange = onWatchedChange)
+        Switch(
+            checked = app.isWatched,
+            onCheckedChange = onWatchedChange,
+            enabled = !locked,
+        )
     }
 }
 

@@ -1,6 +1,8 @@
 package com.cogelasuave.data.local.dao
 
 import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Upsert
 import com.cogelasuave.data.local.entity.WatchedAppEntity
@@ -20,4 +22,14 @@ interface WatchedAppDao {
 
     @Upsert
     suspend fun upsert(entity: WatchedAppEntity)
+
+    /** Full snapshot for the backup export. */
+    @Query("SELECT * FROM watched_apps")
+    suspend fun getAll(): List<WatchedAppEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(items: List<WatchedAppEntity>)
+
+    @Query("DELETE FROM watched_apps")
+    suspend fun clear()
 }

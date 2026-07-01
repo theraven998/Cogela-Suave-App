@@ -2,6 +2,9 @@ package com.cogelasuave.service.overlay
 
 import android.content.Context
 import android.graphics.PixelFormat
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.os.Build
 import android.view.Gravity
 import android.view.KeyEvent
@@ -20,7 +23,10 @@ data class OverlaySpec(
     val appLabel: String,
     val waitSeconds: Int,
     val attemptsToday: Int,
-    val onOpen: () -> Unit,
+    /** Epoch millis of the last time this app was opened, or null if never. */
+    val lastOpenedAtMs: Long?,
+    /** Called with the reason and the minutes the user planned when they choose to open. */
+    val onOpen: (reason: String, plannedMinutes: Int) -> Unit,
     val onDismiss: () -> Unit,
 )
 
@@ -34,8 +40,13 @@ class OverlayController(private val context: Context) {
     private val windowManager =
         context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
+    private val audioManager =
+        context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
     private var hostView: FrameLayout? = null
     private var lifecycleOwner: OverlayLifecycleOwner? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var mutedMusicStream = false
 
     val isShowing: Boolean get() = hostView != null
 
@@ -50,6 +61,7 @@ class OverlayController(private val context: Context) {
                         appLabel = spec.appLabel,
                         waitSeconds = spec.waitSeconds,
                         attemptsToday = spec.attemptsToday,
+                        lastOpenedAtMs = spec.lastOpenedAtMs,
                         onOpen = spec.onOpen,
                         onDismiss = spec.onDismiss,
                     )
@@ -80,16 +92,57 @@ class OverlayController(private val context: Context) {
             .onSuccess {
                 hostView = host
                 lifecycleOwner = owner
+                requestAudioFocus()
             }
             .onFailure { owner.onDestroy() }
     }
 
     fun dismiss() {
         val host = hostView ?: return
+        abandonAudioFocus()
         runCatching { windowManager.removeViewImmediate(host) }
         lifecycleOwner?.onDestroy()
         hostView = null
         lifecycleOwner = null
+    }
+
+    // Take exclusive audio focus so any media in the app behind (reels, videos)
+    // pauses while the breathing overlay is up; restore it on dismiss.
+    private fun requestAudioFocus() {
+        if (audioFocusRequest != null) return
+        val request = AudioFocusRequest.Builder(
+            AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE,
+        ).setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build(),
+        ).build()
+        audioManager.requestAudioFocus(request)
+        audioFocusRequest = request
+
+        // TikTok (and similar) ignore audio focus, so hard-mute the music stream.
+        if (!mutedMusicStream) {
+            audioManager.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                AudioManager.ADJUST_MUTE,
+                0,
+            )
+            mutedMusicStream = true
+        }
+    }
+
+    private fun abandonAudioFocus() {
+        if (mutedMusicStream) {
+            audioManager.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                AudioManager.ADJUST_UNMUTE,
+                0,
+            )
+            mutedMusicStream = false
+        }
+        audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        audioFocusRequest = null
     }
 
     private fun buildLayoutParams(): WindowManager.LayoutParams {

@@ -1,23 +1,40 @@
 package com.cogelasuave.service
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityService
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.pm.PackageManager
+import android.os.Build
+import android.widget.Toast
 import android.view.accessibility.AccessibilityEvent
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.cogelasuave.R
 import com.cogelasuave.domain.model.InterceptionDecision
 import com.cogelasuave.domain.model.WatchedApp
+import com.cogelasuave.domain.usecase.AddReasonTimeUseCase
 import com.cogelasuave.domain.usecase.ObserveWatchedAppsUseCase
 import com.cogelasuave.domain.usecase.RecordAttemptUseCase
 import com.cogelasuave.domain.usecase.RecordDecisionUseCase
+import com.cogelasuave.domain.usecase.RecordOpenUseCase
 import com.cogelasuave.domain.usecase.ResolveWaitSecondsUseCase
+import com.cogelasuave.service.overlay.CountdownChipController
 import com.cogelasuave.service.overlay.OverlayController
 import com.cogelasuave.service.overlay.OverlaySpec
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.ZoneId
 import javax.inject.Inject
 
 /**
@@ -31,9 +48,15 @@ class InterceptAccessibilityService : AccessibilityService() {
     @Inject lateinit var resolveWaitSeconds: ResolveWaitSecondsUseCase
     @Inject lateinit var recordAttempt: RecordAttemptUseCase
     @Inject lateinit var recordDecision: RecordDecisionUseCase
+    @Inject lateinit var recordOpen: RecordOpenUseCase
+    @Inject lateinit var addReasonTime: AddReasonTimeUseCase
+    @Inject lateinit var lastOpenStore: com.cogelasuave.data.system.LastOpenStore
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var overlay: OverlayController
+
+    /** Draggable floating pill showing the session countdown over the watched app. */
+    private lateinit var countdownChip: CountdownChipController
 
     /**
      * Snooze/strict-mode state. Instantiated directly with the service [Context]
@@ -41,6 +64,9 @@ class InterceptAccessibilityService : AccessibilityService() {
      * interception while the user has paused watching.
      */
     private lateinit var snoozeManager: SnoozeManager
+
+    /** App label, used to spot our own uninstall dialog by its text. */
+    private lateinit var appLabel: String
 
     /** Snapshot of watched apps kept in memory for synchronous lookups in the event path. */
     @Volatile private var watchedByPackage: Map<String, WatchedApp> = emptyMap()
@@ -51,10 +77,27 @@ class InterceptAccessibilityService : AccessibilityService() {
     /** Guards against re-triggering while one interception is being prepared/shown. */
     @Volatile private var interceptInProgress = false
 
+    /**
+     * Active "time inside a watched app" session, started when the user opens with
+     * a reason and closed when they leave. Null while no session is running.
+     */
+    private var sessionPackage: String? = null
+    private var sessionReason: String? = null
+    private var sessionStartMs: Long = 0L
+    /** Minutes the user said they'd spend before the session auto-closes. */
+    private var sessionPlannedMinutes: Int = 0
+    /** Epoch millis at which the running session auto-closes, or 0 if none. */
+    private var sessionEndMs: Long = 0L
+    /** Ticker that updates the countdown UI each second and ends the session at 0. */
+    private var sessionTimeoutJob: Job? = null
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         overlay = OverlayController(this)
+        countdownChip = CountdownChipController(this)
         snoozeManager = SnoozeManager(this)
+        createCountdownChannel()
+        appLabel = getString(R.string.app_name)
         observeWatchedApps()
             .onEach { list -> watchedByPackage = list.associateBy { it.packageName } }
             .launchIn(scope)
@@ -64,6 +107,21 @@ class InterceptAccessibilityService : AccessibilityService() {
         // We only care about a new window coming to the foreground.
         if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = event.packageName?.toString() ?: return
+
+        // --- Self-protection: while strict mode is on, refuse to let the user
+        // reach the screens that would remove the app (device-admin deactivation
+        // or its uninstall dialog). Kick them home before they can confirm.
+        if (snoozeManager.isStrictMode && isSelfRemovalScreen(event, pkg)) {
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            Toast.makeText(this, R.string.strict_uninstall_blocked, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // --- 0. Close any open "time inside app" session ---------------------
+        // If a timed session is running and the foreground moved to something that
+        // is neither that app, our own UI, nor a soft surface (keyboard/systemui
+        // floating over it), the user has left: bank the elapsed time.
+        maybeEndSession(pkg)
 
         // --- 1. Ignore "non-app" surfaces ------------------------------------
         // Keyboards (IMEs), the launcher, the system UI shade, popups, etc. fire
@@ -116,6 +174,23 @@ class InterceptAccessibilityService : AccessibilityService() {
         pkg in SYSTEM_SURFACES ||
             SYSTEM_SURFACE_PREFIXES.any { pkg.startsWith(it) }
 
+    /**
+     * Detects the two screens that can remove the app:
+     *  - the device-admin *deactivation* confirmation (Settings `DeviceAdminAdd`);
+     *  - the package-installer *uninstall* dialog naming this app.
+     */
+    private fun isSelfRemovalScreen(event: AccessibilityEvent, pkg: String): Boolean {
+        val cls = event.className?.toString().orEmpty()
+        // Settings device-admin add/deactivate screen.
+        if (pkg == "com.android.settings" && cls.contains("DeviceAdminAdd")) return true
+        // Uninstall confirmation: only block when the dialog mentions our app.
+        if (pkg in INSTALLER_PACKAGES) {
+            val text = event.text.joinToString(" ")
+            if (text.contains(appLabel, ignoreCase = true)) return true
+        }
+        return false
+    }
+
     private fun intercept(watched: WatchedApp) {
         interceptInProgress = true
         lastHandledPackage = watched.packageName
@@ -130,7 +205,8 @@ class InterceptAccessibilityService : AccessibilityService() {
                     appLabel = watched.label,
                     waitSeconds = waitSeconds,
                     attemptsToday = attempts,
-                    onOpen = { onUserChose(watched.packageName, InterceptionDecision.OPENED) },
+                    lastOpenedAtMs = lastOpenStore.getLastOpen(watched.packageName),
+                    onOpen = { reason, minutes -> onUserOpened(watched.packageName, reason, minutes) },
                     onDismiss = { onUserChose(watched.packageName, InterceptionDecision.DISMISSED) },
                 )
             )
@@ -148,20 +224,196 @@ class InterceptAccessibilityService : AccessibilityService() {
         scope.launch { recordDecision(packageName, decision) }
     }
 
+    /**
+     * User chose to open [packageName] under [reason]: drop the overlay, let them
+     * in, record the open, and start the timed session that [maybeEndSession] will
+     * close when they leave.
+     */
+    private fun onUserOpened(packageName: String, reason: String, plannedMinutes: Int) {
+        overlay.dismiss()
+        interceptInProgress = false
+        sessionPackage = packageName
+        sessionReason = reason
+        sessionPlannedMinutes = plannedMinutes
+        sessionStartMs = System.currentTimeMillis()
+        lastOpenStore.setLastOpen(packageName, sessionStartMs)
+
+        sessionTimeoutJob?.cancel()
+        sessionEndMs = 0L
+        if (plannedMinutes > 0) {
+            startCountdown(packageName, plannedMinutes)
+        }
+        scope.launch { recordOpen(packageName, reason) }
+    }
+
+    /**
+     * Shows the countdown chip + ongoing notification and starts a 1-second ticker
+     * that refreshes the chip until the planned time runs out, then ends the
+     * session (kicks the user home). Tapping the chip ends it early.
+     */
+    private fun startCountdown(packageName: String, plannedMinutes: Int) {
+        sessionEndMs = System.currentTimeMillis() + plannedMinutes.toLong() * 60_000L
+        countdownChip.show(formatRemaining(sessionEndMs)) {
+            onSessionTimedOut(packageName)   // tap = end now
+        }
+        showCountdownNotification(sessionEndMs)
+
+        sessionTimeoutJob = scope.launch {
+            while (true) {
+                val remaining = sessionEndMs - System.currentTimeMillis()
+                if (remaining <= 0) break
+                countdownChip.update(formatRemaining(sessionEndMs))
+                delay(1_000)
+            }
+            onSessionTimedOut(packageName)
+        }
+    }
+
+    /**
+     * The planned minutes elapsed (or the user tapped the chip) while still inside
+     * the app: kick the user home and bank the session. No-op if they already left
+     * or switched sessions.
+     */
+    private fun onSessionTimedOut(packageName: String) {
+        if (sessionPackage != packageName) return
+        performGlobalAction(GLOBAL_ACTION_HOME)
+        Toast.makeText(this, R.string.session_time_up, Toast.LENGTH_LONG).show()
+        maybeEndSession(foregroundPkg = "")   // "" != pkg -> banks elapsed time and clears
+    }
+
+    /** Banks the running session's elapsed time if [foregroundPkg] means the user left. */
+    private fun maybeEndSession(foregroundPkg: String) {
+        val pkg = sessionPackage ?: return
+        val reason = sessionReason ?: return
+        if (foregroundPkg == pkg) return                 // still inside the app
+        if (foregroundPkg == packageName) return         // our own overlay / app
+        if (isSoftSurface(foregroundPkg)) return         // keyboard/systemui floating over it
+
+        val startMs = sessionStartMs
+        sessionPackage = null
+        sessionReason = null
+        sessionStartMs = 0L
+        sessionPlannedMinutes = 0
+        sessionEndMs = 0L
+        sessionTimeoutJob?.cancel()
+        sessionTimeoutJob = null
+        clearCountdownUi()
+
+        val rawSeconds = (System.currentTimeMillis() - startMs) / 1000
+        // Cap to guard against screen-off / killed-process inflation.
+        val seconds = rawSeconds.coerceIn(0, MAX_SESSION_SECONDS)
+        if (seconds <= 0) return
+        val epochDay = Instant.ofEpochMilli(startMs)
+            .atZone(ZoneId.systemDefault())
+            .toLocalDate()
+            .toEpochDay()
+        scope.launch { addReasonTime(pkg, reason, epochDay, seconds) }
+    }
+
+    /**
+     * Soft surfaces float *over* the current app without the user leaving it:
+     * keyboards and the system UI shade. Unlike launchers, these must NOT end a
+     * session. Subset of [SYSTEM_SURFACE_PREFIXES] limited to IME / systemui.
+     */
+    private fun isSoftSurface(pkg: String): Boolean =
+        pkg == "com.android.systemui" ||
+            SOFT_SURFACE_PREFIXES.any { pkg.startsWith(it) }
+
+    // --- Countdown UI helpers ------------------------------------------------
+
+    /** "MM:SS" left until [endMs], clamped at 00:00. */
+    private fun formatRemaining(endMs: Long): String {
+        val secs = ((endMs - System.currentTimeMillis()) / 1000).coerceAtLeast(0L)
+        return "⏱ %02d:%02d".format(secs / 60, secs % 60)
+    }
+
+    private fun createCountdownChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val channel = NotificationChannel(
+            COUNTDOWN_CHANNEL_ID,
+            getString(R.string.session_channel_name),
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply { setShowBadge(false) }
+        getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+    }
+
+    /** Ongoing notification with a system-driven countdown chronometer. Best-effort. */
+    private fun showCountdownNotification(endMs: Long) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return
+
+        val notification = NotificationCompat.Builder(this, COUNTDOWN_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(getString(R.string.session_notification_title))
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(true)
+            .setUsesChronometer(true)
+            .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) setChronometerCountDown(true) }
+            .setWhen(endMs)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.notify(COUNTDOWN_NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun clearCountdownUi() {
+        if (::countdownChip.isInitialized) countdownChip.dismiss()
+        runCatching {
+            getSystemService(NotificationManager::class.java)?.cancel(COUNTDOWN_NOTIFICATION_ID)
+        }
+    }
+
     override fun onInterrupt() = Unit
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
         if (::overlay.isInitialized) overlay.dismiss()
+        sessionTimeoutJob?.cancel()
+        clearCountdownUi()
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
+        sessionTimeoutJob?.cancel()
+        clearCountdownUi()
         if (::overlay.isInitialized) overlay.dismiss()
         scope.cancel()
         super.onDestroy()
     }
 
     private companion object {
+        /** Hard ceiling on a single banked session, to absorb screen-off gaps. */
+        const val MAX_SESSION_SECONDS = 4L * 60 * 60
+
+        const val COUNTDOWN_CHANNEL_ID = "session_countdown"
+        const val COUNTDOWN_NOTIFICATION_ID = 4201
+
+        /** Package-installer packages whose uninstall dialog we guard against. */
+        val INSTALLER_PACKAGES = setOf(
+            "com.android.packageinstaller",
+            "com.google.android.packageinstaller",
+            "com.miui.packageinstaller",
+            "com.samsung.android.packageinstaller",
+        )
+
+        /**
+         * Prefixes for surfaces that float *over* the current app (keyboards,
+         * systemui) and so must not end a timed session. Launchers are excluded
+         * on purpose: going home does count as leaving the app.
+         */
+        val SOFT_SURFACE_PREFIXES = listOf(
+            "com.android.systemui",
+            "com.android.inputmethod",
+            "com.google.android.inputmethod",
+            "com.samsung.android.honeyboard",
+            "com.touchtype.swiftkey",
+        )
+
         /**
          * Exact package names that must never count as "the user opened an app".
          * These are full matches; for vendor variants that share a known prefix

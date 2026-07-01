@@ -49,7 +49,7 @@ fun PermissionsScreen(state: PermissionsState) {
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "Para poner una pausa antes de abrir tus apps, CógelaSuave necesita dos permisos. " +
+            text = "Para poner una pausa antes de abrir tus apps, Cógela Suave necesita dos permisos. " +
                 "Nada sale de tu teléfono.",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
@@ -71,7 +71,7 @@ fun PermissionsScreen(state: PermissionsState) {
         PermissionCard(
             step = "2",
             title = "Servicio de accesibilidad",
-            description = "Permite detectar cuándo abres una app vigilada. Busca «CógelaSuave» en la lista " +
+            description = "Permite detectar cuándo abres una app vigilada. Busca «Cógela Suave» en la lista " +
                 "y actívalo.",
             granted = state.accessibilityEnabled,
             buttonText = "Abrir ajustes",

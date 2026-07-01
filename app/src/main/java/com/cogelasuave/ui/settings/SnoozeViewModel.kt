@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cogelasuave.service.SnoozeManager
+import com.cogelasuave.service.StrictModeSecurity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,7 +18,9 @@ data class SnoozeUiState(
     val snoozeActive: Boolean = false,
     val remainingMinutes: Int = 0,
     val strictMode: Boolean = false,
+    val strictRemainingMillis: Long = 0L,
     val options: List<Int> = SnoozeManager.SNOOZE_OPTIONS_MINUTES,
+    val strictOptions: List<Int> = SnoozeManager.STRICT_OPTIONS_MINUTES,
 )
 
 /**
@@ -56,9 +59,23 @@ class SnoozeViewModel(context: Context) : ViewModel() {
         _state.value = readState()
     }
 
-    fun onStrictModeChange(enabled: Boolean) {
-        snoozeManager.setStrictMode(enabled)
+    /**
+     * Enables the strict lock for [durationMinutes] and returns the freshly
+     * generated master password (plaintext) so the UI can show it once for the
+     * user to write down. Only the hash is persisted.
+     */
+    fun onEnableStrict(durationMinutes: Int): String {
+        val password = StrictModeSecurity.generatePassword()
+        snoozeManager.enableStrictMode(durationMinutes, StrictModeSecurity.hash(password))
         _state.value = readState()
+        return password
+    }
+
+    /** Tries to release the strict lock with [password]; true if it unlocked. */
+    fun onTryDisableStrict(password: String): Boolean {
+        val ok = snoozeManager.tryDisableStrictMode(password)
+        _state.value = readState()
+        return ok
     }
 
     private fun readState(): SnoozeUiState {
@@ -69,6 +86,7 @@ class SnoozeViewModel(context: Context) : ViewModel() {
             snoozeActive = active,
             remainingMinutes = minsLeft,
             strictMode = snoozeManager.isStrictMode,
+            strictRemainingMillis = snoozeManager.strictRemainingMillis(),
         )
     }
 

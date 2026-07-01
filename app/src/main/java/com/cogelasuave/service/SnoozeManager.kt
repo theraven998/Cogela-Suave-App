@@ -17,10 +17,12 @@ import android.content.SharedPreferences
  *    paused. While "now" is before that timestamp the service must NOT intercept
  *    watched apps. A value of `0L` (or any past timestamp) means "not snoozed".
  *
- *  - **Strict mode**: a boolean flag. When ON, snoozing is forbidden — the whole
- *    point is to stop the user from trivially bypassing their own pause. Any
- *    attempt to start a snooze while strict mode is on is a no-op, and turning
- *    strict mode on immediately clears any active snooze.
+ *  - **Strict mode**: a *timed lock*. When enabled the user picks a duration; a
+ *    master password (generated and shown once, meant to be written on paper) is
+ *    hashed and stored. While the lock is active snoozing is forbidden AND the
+ *    lock cannot be turned off — the only early exit is typing the master
+ *    password. When the chosen duration elapses the lock releases on its own.
+ *    Enabling strict mode immediately clears any active snooze.
  *
  * All reads are cheap and synchronous, which is exactly what the accessibility
  * event path needs.
@@ -34,9 +36,21 @@ class SnoozeManager(context: Context) {
     val snoozeUntilMillis: Long
         get() = prefs.getLong(KEY_SNOOZE_UNTIL, 0L)
 
-    /** Whether strict mode (no snoozing allowed) is currently enabled. */
+    /** Epoch millis at which the strict lock auto-releases, or 0 if never set. */
+    val strictUntilMillis: Long
+        get() = prefs.getLong(KEY_STRICT_UNTIL, 0L)
+
+    /**
+     * Whether the strict lock is currently in force. True while "now" is before
+     * [strictUntilMillis]; once the chosen duration elapses it reads false (and
+     * lazily clears the stored hash on the next mutating call).
+     */
     val isStrictMode: Boolean
-        get() = prefs.getBoolean(KEY_STRICT_MODE, false)
+        get() = System.currentTimeMillis() < strictUntilMillis
+
+    /** Millis remaining on the strict lock, or 0 if not active. */
+    fun strictRemainingMillis(nowMillis: Long = System.currentTimeMillis()): Long =
+        (strictUntilMillis - nowMillis).coerceAtLeast(0L)
 
     /**
      * True while a snooze is currently in effect. This is the single check the
@@ -72,13 +86,49 @@ class SnoozeManager(context: Context) {
     }
 
     /**
-     * Toggles strict mode. Turning it ON also clears any active snooze so the
-     * user cannot leave a pause running while "locking" the system.
+     * Enables the strict lock for [durationMinutes], storing the hash of the
+     * master password. Also clears any active snooze so the user cannot leave a
+     * pause running while "locking" the system. No-op if a lock is already active.
      */
-    fun setStrictMode(enabled: Boolean) {
+    fun enableStrictMode(
+        durationMinutes: Int,
+        passwordHash: String,
+        nowMillis: Long = System.currentTimeMillis(),
+    ) {
+        if (isStrictMode) return
+        val until = nowMillis + durationMinutes.toLong() * 60_000L
         prefs.edit().apply {
-            putBoolean(KEY_STRICT_MODE, enabled)
-            if (enabled) putLong(KEY_SNOOZE_UNTIL, 0L)
+            putLong(KEY_STRICT_UNTIL, until)
+            putString(KEY_STRICT_HASH, passwordHash)
+            putLong(KEY_SNOOZE_UNTIL, 0L)
+            apply()
+        }
+    }
+
+    /**
+     * Attempts to release the strict lock early with [password]. Returns `true`
+     * if the lock is no longer active afterwards: either it was already inactive,
+     * or the password matched the stored hash. Returns `false` on a wrong password
+     * while the lock is still active.
+     */
+    fun tryDisableStrictMode(password: String): Boolean {
+        if (!isStrictMode) {
+            clearStrictMode()
+            return true
+        }
+        val stored = prefs.getString(KEY_STRICT_HASH, null) ?: return false
+        if (StrictModeSecurity.hash(StrictModeSecurity.normalizeInput(password)) != stored) {
+            return false
+        }
+        clearStrictMode()
+        return true
+    }
+
+    /** Wipes strict-lock state (used after release or expiry). */
+    private fun clearStrictMode() {
+        prefs.edit().apply {
+            remove(KEY_STRICT_UNTIL)
+            remove(KEY_STRICT_HASH)
             apply()
         }
     }
@@ -86,9 +136,13 @@ class SnoozeManager(context: Context) {
     companion object {
         private const val PREFS_NAME = "cogelasuave_snooze"
         private const val KEY_SNOOZE_UNTIL = "snooze_until_millis"
-        private const val KEY_STRICT_MODE = "strict_mode"
+        private const val KEY_STRICT_UNTIL = "strict_until_millis"
+        private const val KEY_STRICT_HASH = "strict_password_hash"
 
         /** Snooze durations offered in the UI and the Quick Settings tile. */
         val SNOOZE_OPTIONS_MINUTES = listOf(15, 30, 60)
+
+        /** Strict-lock durations offered in the UI, in minutes. */
+        val STRICT_OPTIONS_MINUTES = listOf(30, 60, 120, 240, 480, 1440)
     }
 }

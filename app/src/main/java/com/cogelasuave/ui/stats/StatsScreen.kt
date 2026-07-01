@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,11 +30,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cogelasuave.R
 import com.cogelasuave.domain.model.DailyStat
 import com.cogelasuave.domain.model.DayStats
+import com.cogelasuave.domain.model.ReasonStat
 import com.cogelasuave.domain.model.WeeklySummary
 import java.time.LocalDate
 import java.time.format.TextStyle
@@ -94,6 +97,15 @@ fun StatsScreen(viewModel: StatsViewModel = hiltViewModel()) {
         item {
             Spacer(Modifier.height(12.dp))
             WeeklySection(state.weekly)
+        }
+
+        item {
+            Spacer(Modifier.height(12.dp))
+            ReasonsSection(
+                reasons = state.reasons,
+                range = state.reasonRange,
+                onRangeChange = viewModel::setReasonRange,
+            )
         }
 
         item {
@@ -283,6 +295,111 @@ private fun dayLabel(epochDay: Long): String =
         .getDisplayName(TextStyle.SHORT, Locale.getDefault())
         .take(3)
         .replaceFirstChar { it.uppercase() }
+
+@Composable
+private fun ReasonsSection(
+    reasons: List<ReasonStat>,
+    range: ReasonRange,
+    onRangeChange: (ReasonRange) -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = stringResource(R.string.stats_reasons_title),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(12.dp))
+
+            // Día / Semana toggle.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = range == ReasonRange.DAY,
+                    onClick = { onRangeChange(ReasonRange.DAY) },
+                    label = { Text(stringResource(R.string.stats_reasons_range_day)) },
+                )
+                FilterChip(
+                    selected = range == ReasonRange.WEEK,
+                    onClick = { onRangeChange(ReasonRange.WEEK) },
+                    label = { Text(stringResource(R.string.stats_reasons_range_week)) },
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+
+            if (reasons.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 16.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = stringResource(R.string.stats_reasons_empty),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            } else {
+                val maxSeconds = (reasons.maxOfOrNull { it.seconds } ?: 0L).coerceAtLeast(1L)
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    reasons.forEach { reason ->
+                        ReasonRow(reason, maxSeconds)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReasonRow(reason: ReasonStat, maxSeconds: Long) {
+    val colors = MaterialTheme.colorScheme
+    val fraction = (reason.seconds.toFloat() / maxSeconds.toFloat()).coerceIn(0f, 1f)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = reason.reason,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = stringResource(
+                    R.string.stats_reasons_time,
+                    formatMinutes(reason.minutes),
+                    reason.opens,
+                ),
+                style = MaterialTheme.typography.labelMedium,
+                color = colors.onSurface.copy(alpha = 0.7f),
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(colors.onSurface.copy(alpha = 0.10f)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(fraction)
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(colors.primary),
+            )
+        }
+    }
+}
+
+/** "Xh Ym" once the hour mark is reached, otherwise "Ym". */
+@Composable
+private fun formatMinutes(minutes: Int): String =
+    if (minutes >= 60) {
+        stringResource(R.string.stats_minutes_hm, minutes / 60, minutes % 60)
+    } else {
+        stringResource(R.string.stats_minutes_short, minutes)
+    }
 
 @Composable
 private fun SummaryTile(modifier: Modifier = Modifier, value: String, label: String) {

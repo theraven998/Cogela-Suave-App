@@ -1,6 +1,8 @@
 package com.cogelasuave.data.local.dao
 
 import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.cogelasuave.data.local.entity.DailyStatEntity
 import com.cogelasuave.data.local.entity.DailyTotals
@@ -8,6 +10,16 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface DailyStatDao {
+
+    /** Full snapshot for the backup export. */
+    @Query("SELECT * FROM daily_stats")
+    suspend fun getAll(): List<DailyStatEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(items: List<DailyStatEntity>)
+
+    @Query("DELETE FROM daily_stats")
+    suspend fun clear()
 
     @Query("SELECT * FROM daily_stats WHERE epochDay = :epochDay ORDER BY attempts DESC")
     fun observeForDay(epochDay: Long): Flow<List<DailyStatEntity>>

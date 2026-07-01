@@ -4,8 +4,10 @@ import android.content.Context
 import androidx.room.Room
 import com.cogelasuave.data.local.AppDatabase
 import com.cogelasuave.data.local.dao.DailyStatDao
+import com.cogelasuave.data.local.dao.ReasonStatDao
 import com.cogelasuave.data.local.dao.SettingsDao
 import com.cogelasuave.data.local.dao.WatchedAppDao
+import com.cogelasuave.service.SnoozeManager
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -32,4 +34,12 @@ object DatabaseModule {
 
     @Provides
     fun provideDailyStatDao(db: AppDatabase): DailyStatDao = db.dailyStatDao()
+
+    @Provides
+    fun provideReasonStatDao(db: AppDatabase): ReasonStatDao = db.reasonStatDao()
+
+    @Provides
+    @Singleton
+    fun provideSnoozeManager(@ApplicationContext context: Context): SnoozeManager =
+        SnoozeManager(context)
 }
